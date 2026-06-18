@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>ESP32 WiFi 配网</title>
+    <style>
+        body { font-family: Arial; margin: 40px auto; max-width: 420px; padding: 20px; }
+        input, select, button { width: 100%; padding: 10px; margin: 8px 0; box-sizing: border-box; }
+        button { background: #007BFF; color: white; border: none; border-radius: 5px; }
+    </style>
+</head>
+<body>
+<h3>ESP32 WiFi 配置</h3>
+<select id="ssidSelect"></select>
+<input type="password" id="pwd" placeholder="WiFi 密码">
+<button onclick="save()">保存并重启</button>
+<div id="status" style="color:red; margin-top:10px"></div>
+<script>
+    function loadNetworks() {
+        fetch('/scan')
+            .then(r => r.json())
+            .then(list => {
+                let sel = document.getElementById('ssidSelect');
+                sel.innerHTML = '';
+                list.forEach(ssid => {
+                    let opt = document.createElement('option');
+                    opt.value = ssid;
+                    opt.innerText = ssid;
+                    sel.appendChild(opt);
+                });
+            });
+    }
+    function save() {
+        let ssid = document.getElementById('ssidSelect').value;
+        let pwd = document.getElementById('pwd').value;
+        if (!ssid || !pwd) {
+            document.getElementById('status').innerText = "请填写完整";
+            return;
+        }
+        fetch('/save?ssid=' + encodeURIComponent(ssid) + '&pwd=' + encodeURIComponent(pwd))
+            .then(r => r.text())
+            .then(t => document.getElementById('status').innerText = t);
+    }
+    loadNetworks();
+</script>
+</body>
+</html>
