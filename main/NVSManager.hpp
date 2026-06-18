@@ -18,5 +18,7 @@ public:
     // AI
     bool getAIConfig(std::string &url, std::string &apiKey, std::string &model);
     void setAIConfig(const std::string &url, const std::string &apiKey, const std::string &model);
+    bool getAIStreamEnabled();
+    void setAIStreamEnabled(bool enabled);
     void clearAIConfig();
 };

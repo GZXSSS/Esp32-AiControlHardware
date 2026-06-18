@@ -7,6 +7,10 @@ bool WebServerManager::start(const std::vector<Route>& routes) {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.lru_purge_enable = true;
     config.stack_size = 12288;
+    // Ensure all routes fit; default max_uri_handlers is often too small.
+    if (routes.size() > config.max_uri_handlers) {
+        config.max_uri_handlers = static_cast<uint16_t>(routes.size());
+    }
     if (httpd_start(&server_, &config) != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start server");
         return false;

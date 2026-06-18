@@ -12,6 +12,7 @@ static const char *NVS_NAMESPACE = "config";
 static const char *NVS_KEY_AI_URL = "url";
 static const char *NVS_KEY_AI_API_KEY = "api_key";
 static const char *NVS_KEY_AI_MODEL = "model";
+static const char *NVS_KEY_AI_STREAM = "ai_stream";
 
 bool NVSManager::init() {
     esp_err_t ret = nvs_flash_init();
@@ -106,12 +107,43 @@ void NVSManager::setAIConfig(const std::string &url, const std::string &apiKey, 
     }
 }
 
+bool NVSManager::getAIStreamEnabled() {
+    nvs_handle_t nvs;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK) {
+        return true;
+    }
+    uint8_t enabled = 1;
+    const esp_err_t ret = nvs_get_u8(nvs, NVS_KEY_AI_STREAM, &enabled);
+    nvs_close(nvs);
+    if (ret == ESP_ERR_NVS_NOT_FOUND) {
+        if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs) == ESP_OK) {
+            nvs_set_u8(nvs, NVS_KEY_AI_STREAM, 1);
+            nvs_commit(nvs);
+            nvs_close(nvs);
+            ESP_LOGI(TAG, "AI stream default saved: on");
+        }
+        return true;
+    }
+    return ret == ESP_OK ? enabled != 0 : true;
+}
+
+void NVSManager::setAIStreamEnabled(bool enabled) {
+    nvs_handle_t nvs;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs) == ESP_OK) {
+        nvs_set_u8(nvs, NVS_KEY_AI_STREAM, enabled ? 1 : 0);
+        nvs_commit(nvs);
+        nvs_close(nvs);
+        ESP_LOGI(TAG, "AI stream mode saved: %s", enabled ? "on" : "off");
+    }
+}
+
 void NVSManager::clearAIConfig() {
     nvs_handle_t nvs;
     if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs) == ESP_OK) {
         nvs_erase_key(nvs, NVS_KEY_AI_URL);
         nvs_erase_key(nvs, NVS_KEY_AI_API_KEY);
         nvs_erase_key(nvs, NVS_KEY_AI_MODEL);
+        nvs_erase_key(nvs, NVS_KEY_AI_STREAM);
         nvs_commit(nvs);
         nvs_close(nvs);
         ESP_LOGI(TAG, "AI config cleared");

@@ -9,11 +9,15 @@
 class AIController {
 public:
     using ResponseCallback = std::function<void(const std::string&)>;
+    using StreamChunkCallback = std::function<void(const std::string&)>;
 
     AIController(std::string url, std::string apiKey, std::string model);
 
     // 同步调用（阻塞当前任务，建议在独立任务中调用）
     void sendQuery(const std::string &userQuery, const ResponseCallback &callback);
+    void sendQueryStream(const std::string &userQuery,
+                         const StreamChunkCallback &onChunk,
+                         const ResponseCallback &onDone);
 
 private:
     std::string url_;

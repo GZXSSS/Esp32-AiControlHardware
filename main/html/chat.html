@@ -118,6 +118,20 @@
         .clear-btn:hover {
             background: #d70015;
         }
+        .toggle-btn {
+            border: none;
+            border-radius: 20px;
+            padding: 8px 14px;
+            font-size: 14px;
+            cursor: pointer;
+            color: white;
+        }
+        .toggle-btn.enabled {
+            background: #34c759;
+        }
+        .toggle-btn.disabled {
+            background: #8e8e93;
+        }
     </style>
 </head>
 <body>
@@ -144,6 +158,10 @@
         <div><label for="setUrl">API 地址</label><br><input id="setUrl" style="width:100%;" placeholder="https://api.siliconflow.cn/v1/chat/completions"></div>
         <div><label for="setApiKey">API Key</label><br><input id="setApiKey" style="width:100%;" type="password" placeholder="sk-..."></div>
         <div><label for="setModel">模型名称</label><br><input id="setModel" style="width:100%;" placeholder="Qwen/Qwen2.5-7B-Instruct"></div>
+        <div style="margin-top:8px; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+            <span>AI 流式输出</span>
+            <button id="setStream" type="button" class="toggle-btn enabled" aria-pressed="true">开启（默认）</button>
+        </div>
         <div style="margin-top:10px;">
             <button id="saveConfigBtn" aria-label="保存AI配置">保存</button>
             <button id="clearConfigBtn" aria-label="清空AI配置">清空配置</button>
@@ -165,7 +183,9 @@
         const setUrl = document.getElementById('setUrl');
         const setApiKey = document.getElementById('setApiKey');
         const setModel = document.getElementById('setModel');
+        const setStream = document.getElementById('setStream');
         const configMsg = document.getElementById('configMsg');
+        let streamEnabled = true;
 
         function addMessage(text, type = 'system') {
             const div = document.createElement('div');
@@ -174,6 +194,7 @@
             div.textContent = text;
             messageArea.appendChild(div);
             messageArea.scrollTop = messageArea.scrollHeight;
+            return div;
         }
 
         function setStatus(text, isError = false) {
@@ -182,41 +203,198 @@
             statusBar.style.color = isError ? '#ff3b30' : '#888';
         }
 
+        function setStreamFlag(enabled) {
+            streamEnabled = !!enabled;
+            if (setStream) {
+                setStream.textContent = streamEnabled ? '开启（默认）' : '关闭';
+                setStream.classList.toggle('enabled', streamEnabled);
+                setStream.classList.toggle('disabled', !streamEnabled);
+                setStream.setAttribute('aria-pressed', streamEnabled ? 'true' : 'false');
+            }
+        }
+
+        async function sendQueryNormal(query) {
+            const url = '/chat?q=' + encodeURIComponent(query);
+            const response = await fetch(url);
+            const contentType = response.headers.get('content-type') || '';
+            const result = contentType.includes('application/json') ? await response.json() : { reply: await response.text() };
+
+            if (!response.ok) {
+                const errText = typeof result === 'string' ? result : (result.reply || '请求失败');
+                addMessage('❌ ' + errText, 'system');
+                setStatus('请求失败', true);
+                return;
+            }
+
+            if (result.type === 'control') {
+                addMessage('✅ ' + (result.reply || '已执行'), 'control');
+                setStatus('控制执行成功');
+                return;
+            }
+
+            const reply = result.reply || result.message || result;
+            addMessage(reply, 'system');
+            setStatus('回复已显示');
+        }
+
+        async function sendQueryStream(query) {
+            const aiMsg = addMessage('', 'system');
+            const response = await fetch('/chat_stream?q=' + encodeURIComponent(query));
+            if (!response.ok || !response.body) {
+                const text = await response.text();
+                aiMsg.textContent = '❌ ' + (text || '请求失败');
+                setStatus('请求失败', true);
+                return;
+            }
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder('utf-8');
+            let buffer = '';
+            let completed = false;
+            let hasDelta = false;
+
+            function handleSSEPayload(payload) {
+                if (!payload) return;
+                let data;
+                try {
+                    data = JSON.parse(payload);
+                } catch (e) {
+                    return;
+                }
+                if (data.type === 'delta') {
+                    hasDelta = true;
+                    aiMsg.textContent += data.content || '';
+                    setStatus('AI 输出中...');
+                    messageArea.scrollTop = messageArea.scrollHeight;
+                    return;
+                }
+                if (data.type === 'control') {
+                    hasDelta = true;
+                    aiMsg.className = 'message control-msg';
+                    aiMsg.textContent = '✅ ' + (data.content || '已执行');
+                    setStatus('控制执行成功');
+                    return;
+                }
+                if (data.type === 'error') {
+                    aiMsg.textContent = '❌ ' + (data.content || '请求失败');
+                    setStatus('请求失败', true);
+                    completed = true;
+                    return;
+                }
+                if (data.type === 'done') {
+                    if (!hasDelta && !aiMsg.textContent) {
+                        aiMsg.textContent = 'AI returned an empty response';
+                    }
+                    if (!statusBar.textContent.includes('失败')) {
+                        setStatus('回复已显示');
+                    }
+                    completed = true;
+                }
+            }
+
+            while (!completed) {
+                const { value, done } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                let splitIndex = buffer.indexOf('\n\n');
+                while (splitIndex !== -1) {
+                    const block = buffer.slice(0, splitIndex);
+                    buffer = buffer.slice(splitIndex + 2);
+                    const lines = block.split('\n');
+                    for (let i = 0; i < lines.length; i++) {
+                        const line = lines[i].trim();
+                        if (!line.startsWith('data:')) continue;
+                        handleSSEPayload(line.slice(5).trim());
+                    }
+                    splitIndex = buffer.indexOf('\n\n');
+                }
+            }
+        }
+
         async function sendQuery(query) {
             if (!query.trim()) return;
-            // 显示用户消息
             addMessage(query, 'user');
             inputBox.value = '';
             sendBtn.disabled = true;
             setStatus('AI 思考中...');
 
             try {
-                const url = '/chat?q=' + encodeURIComponent(query);
-                const response = await fetch(url);
-                const contentType = response.headers.get('content-type') || '';
-                const result = contentType.includes('application/json') ? await response.json() : { reply: await response.text() };
-
-                if (!response.ok) {
-                    const errText = typeof result === 'string' ? result : (result.reply || '请求失败');
-                    addMessage('❌ ' + errText, 'system');
-                    setStatus('请求失败', true);
-                } else if (result.type === 'control') {
-                    addMessage('✅ ' + (result.reply || '已执行'), 'control');
-                    setStatus('控制执行成功');
+                if (streamEnabled) {
+                    await sendQueryStream(query);
                 } else {
-                    // 普通回复
-                    const reply = result.reply || result.message || result;
-                    addMessage(reply, 'system');
-                    setStatus('回复已显示');
+                    await sendQueryNormal(query);
                 }
             } catch (error) {
                 addMessage('❌ 请求失败: ' + error.message, 'system');
                 setStatus('连接错误', true);
             } finally {
                 sendBtn.disabled = false;
-                if (!statusBar.textContent.includes('成功')) {
+                if (!statusBar.textContent.includes('成功') && !statusBar.textContent.includes('失败')) {
                     setStatus('就绪');
                 }
+            }
+        }
+
+        async function loadConfig() {
+            try {
+                const res = await fetch('/get_ai_config');
+                const data = await res.json();
+                setUrl.value = data.url || '';
+                if (data.configured) {
+                    setApiKey.value = data.api_key || '';
+                    setModel.value = data.model || '';
+                } else {
+                    setApiKey.value = '';
+                    setModel.value = '';
+                }
+                setStreamFlag(data.ai_stream_enabled !== false);
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        async function saveConfig() {
+            const url = setUrl.value.trim();
+            const apiKey = setApiKey.value.trim();
+            const model = setModel.value.trim();
+            const stream = streamEnabled ? '1' : '0';
+            if (!apiKey || !model) {
+                alert('请填写 API Key 和模型名称');
+                return;
+            }
+            const body = `api_key=${encodeURIComponent(apiKey)}&model=${encodeURIComponent(model)}&url=${encodeURIComponent(url)}&ai_stream=${stream}`;
+            try {
+                const res = await fetch('/set_ai_config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: body
+                });
+                configMsg.innerText = await res.text();
+                if (res.ok) {
+                    setStreamFlag(streamEnabled);
+                    alert('配置已保存并应用！');
+                    settingsModal.style.display = 'none';
+                    await loadConfig();
+                }
+            } catch (e) {
+                configMsg.innerText = '请求失败：' + e;
+            }
+        }
+
+        async function clearConfig() {
+            try {
+                const res = await fetch('/clear_ai_config', { method: 'POST' });
+                configMsg.innerText = await res.text();
+                if (res.ok) {
+                    setUrl.value = '';
+                    setApiKey.value = '';
+                    setModel.value = '';
+                    setStreamFlag(true);
+                    alert('AI 配置已清空');
+                }
+            } catch (e) {
+                configMsg.innerText = '请求失败：' + e;
             }
         }
 
@@ -237,80 +415,26 @@
             setStatus('就绪');
         });
 
-        // 自动聚焦
+        settingsBtn.addEventListener('click', () => {
+            settingsModal.style.display = 'flex';
+            loadConfig();
+        });
+        document.getElementById('closeSettingsBtn').addEventListener('click', () => {
+            settingsModal.style.display = 'none';
+        });
+        document.getElementById('saveConfigBtn').addEventListener('click', saveConfig);
+        document.getElementById('clearConfigBtn').addEventListener('click', clearConfig);
+        settingsModal.addEventListener('click', (e) => {
+            if (e.target === settingsModal) settingsModal.style.display = 'none';
+        });
+
+        setStream.addEventListener('click', () => {
+            setStreamFlag(!streamEnabled);
+        });
+
         inputBox.focus();
-    })();
-    // 加载当前配置
-    async function loadConfig() {
-        try {
-            const res = await fetch('/get_ai_config');
-            const data = await res.json();
-            setUrl.value = data.url || '';
-            if (data.configured) {
-                setApiKey.value = data.api_key || '';
-                setModel.value = data.model || '';
-            } else {
-                setApiKey.value = '';
-                setModel.value = '';
-            }
-        } catch(e) { console.error(e); }
-    }
-
-    // 保存配置
-    async function saveConfig() {
-        const url = setUrl.value.trim();
-        const apiKey = setApiKey.value.trim();
-        const model = setModel.value.trim();
-        if (!apiKey || !model) {
-            alert('请填写 API Key 和模型名称');
-            return;
-        }
-        const body = `api_key=${encodeURIComponent(apiKey)}&model=${encodeURIComponent(model)}&url=${encodeURIComponent(url)}`;
-        try {
-            const res = await fetch('/set_ai_config', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: body
-            });
-            configMsg.innerText = await res.text();
-            if (res.ok) {
-                alert('配置已保存并应用！');
-                settingsModal.style.display = 'none';
-                await loadConfig();
-            }
-        } catch (e) {
-            configMsg.innerText = '请求失败：' + e;
-        }
-    }
-
-
-        async function clearConfig() {
-            try {
-                const res = await fetch('/clear_ai_config', { method: 'POST' });
-                configMsg.innerText = await res.text();
-                if (res.ok) {
-                    setUrl.value = '';
-                    setApiKey.value = '';
-                    setModel.value = '';
-                    alert('AI 配置已清空');
-                }
-            } catch (e) {
-                configMsg.innerText = '请求失败：' + e;
-            }
-        }
-    // 事件绑定
-    settingsBtn.addEventListener('click', () => {
-        settingsModal.style.display = 'flex';
         loadConfig();
-    });
-    document.getElementById('closeSettingsBtn').addEventListener('click', () => {
-        settingsModal.style.display = 'none';
-    });
-    document.getElementById('saveConfigBtn').addEventListener('click', saveConfig);
-    document.getElementById('clearConfigBtn').addEventListener('click', clearConfig);
-    settingsModal.addEventListener('click', (e) => {
-        if (e.target === settingsModal) settingsModal.style.display = 'none';
-    });
+    })();
 </script>
 </body>
 </html>

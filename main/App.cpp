@@ -15,6 +15,8 @@ static const char *TAG = "App";
 
 namespace {
 
+constexpr size_t STREAM_REPLY_TAIL_LIMIT = 512;
+
 std::string urlDecode(const char *data, size_t len) {
     std::string out;
     out.reserve(len);
@@ -54,10 +56,29 @@ bool getFormField(const std::string &body, const char *key, std::string &value) 
     return true;
 }
 
+bool parseBoolField(const std::string &value, bool defaultValue) {
+    if (value.empty()) return defaultValue;
+    if (value == "1" || value == "true" || value == "on" || value == "yes") return true;
+    if (value == "0" || value == "false" || value == "off" || value == "no") return false;
+    return defaultValue;
+}
+
 bool containsAny(const std::string &text, std::initializer_list<const char *> needles) {
     return std::any_of(needles.begin(), needles.end(), [&](const char *needle) {
         return text.find(needle) != std::string::npos;
     });
+}
+
+void appendTailWithLimit(std::string &tail, const std::string &chunk, size_t limit) {
+    if (chunk.empty()) return;
+    if (chunk.size() >= limit) {
+        tail = chunk.substr(chunk.size() - limit);
+        return;
+    }
+    tail += chunk;
+    if (tail.size() > limit) {
+        tail.erase(0, tail.size() - limit);
+    }
 }
 
 enum class LocalCommand { None, On, Off, Flow };
@@ -230,9 +251,11 @@ void App::startSTAWebServer() {
     routes.push_back({"/get_ai_config", HTTP_GET, [this](httpd_req_t *req) -> esp_err_t {
         std::string url, apiKey, model;
         bool hasConfig = nvs_.getAIConfig(url, apiKey, model);
+        const bool streamEnabled = nvs_.getAIStreamEnabled();
         cJSON *root = cJSON_CreateObject();
         cJSON_AddBoolToObject(root, "configured", hasConfig);
         cJSON_AddStringToObject(root, "url", url.empty() ? AI_DEFAULT_URL : url.c_str());
+        cJSON_AddBoolToObject(root, "ai_stream_enabled", streamEnabled);
         if (hasConfig) {
             cJSON_AddStringToObject(root, "api_key", apiKey.c_str());
             cJSON_AddStringToObject(root, "model", model.c_str());
@@ -254,16 +277,18 @@ void App::startSTAWebServer() {
         }
         buffer[ret] = '\0';  // 确保字符串结束
 
-        std::string apiKey, model, url;
+        std::string apiKey, model, url, streamFlag;
         getFormField(buffer, "api_key", apiKey);
         getFormField(buffer, "model", model);
         getFormField(buffer, "url", url);
+        getFormField(buffer, "ai_stream", streamFlag);
 
         if (apiKey.empty() || model.empty()) {
             httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing api_key or model");
             return ESP_FAIL;
         }
         nvs_.setAIConfig(url, apiKey, model);
+        nvs_.setAIStreamEnabled(parseBoolField(streamFlag, true));
         reloadAIController();
         httpd_resp_send(req, "Config saved and applied", HTTPD_RESP_USE_STRLEN);
         return ESP_OK;
@@ -340,6 +365,104 @@ void App::startSTAWebServer() {
         free(json);
         cJSON_Delete(root);
         return ESP_OK;
+    }});
+
+    routes.push_back({"/chat_stream", HTTP_GET, [this](httpd_req_t *req) -> esp_err_t {
+        char query[192] = {0};
+        if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK) {
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "No q");
+            return ESP_FAIL;
+        }
+        char q_raw[160] = {0};
+        if (httpd_query_key_value(query, "q", q_raw, sizeof(q_raw)) != ESP_OK || strlen(q_raw) == 0) {
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty");
+            return ESP_FAIL;
+        }
+
+        std::string q = q_raw;
+        httpd_resp_set_type(req, "text/event-stream");
+        httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+        httpd_resp_set_hdr(req, "Connection", "keep-alive");
+
+        auto sendEvent = [req](const char *type, const std::string &text) -> bool {
+            cJSON *root = cJSON_CreateObject();
+            if (!root) return false;
+            cJSON_AddStringToObject(root, "type", type);
+            cJSON_AddStringToObject(root, "content", text.c_str());
+            char *json = cJSON_PrintUnformatted(root);
+            cJSON_Delete(root);
+            if (!json) return false;
+            std::string frame = std::string("data: ") + json + "\n\n";
+            free(json);
+            return httpd_resp_send_chunk(req, frame.c_str(), static_cast<ssize_t>(frame.size())) == ESP_OK;
+        };
+
+        switch (detectLocalCommand(q)) {
+            case LocalCommand::On:
+                gpio_.setD2(true);
+                sendEvent("control", "已开灯");
+                sendEvent("done", "");
+                httpd_resp_send_chunk(req, nullptr, 0);
+                return ESP_OK;
+            case LocalCommand::Off:
+                gpio_.setD2(false);
+                sendEvent("control", "已关灯");
+                sendEvent("done", "");
+                httpd_resp_send_chunk(req, nullptr, 0);
+                return ESP_OK;
+            case LocalCommand::Flow:
+                gpio_.startFlow();
+                sendEvent("control", "已启动流水灯");
+                sendEvent("done", "");
+                httpd_resp_send_chunk(req, nullptr, 0);
+                return ESP_OK;
+            case LocalCommand::None:
+                break;
+        }
+
+        if (!ai_) {
+            sendEvent("error", "AI not configured");
+            sendEvent("done", "");
+            httpd_resp_send_chunk(req, nullptr, 0);
+            return ESP_FAIL;
+        }
+
+        bool streamOk = true;
+        bool hasAnyOutput = false;
+        std::string reply;
+        ai_->sendQueryStream(
+            q,
+            [&](const std::string &chunk) {
+                hasAnyOutput = true;
+                appendTailWithLimit(reply, chunk, STREAM_REPLY_TAIL_LIMIT);
+                if (streamOk && !sendEvent("delta", chunk)) {
+                    streamOk = false;
+                }
+            },
+            [&](const std::string &finalReply) {
+                if (!hasAnyOutput && !finalReply.empty()) {
+                    hasAnyOutput = true;
+                    appendTailWithLimit(reply, finalReply, STREAM_REPLY_TAIL_LIMIT);
+                }
+            }
+        );
+
+        if (containsAny(reply, {"D2 turned ON", "打开灯", "开灯", "turn on", "turn on the light"})) {
+            gpio_.setD2(true);
+        } else if (containsAny(reply, {"D2 turned OFF", "关闭灯", "关灯", "turn off", "turn off the light"})) {
+            gpio_.setD2(false);
+        } else if (containsAny(reply, {"Flow started", "流水", "flow"})) {
+            gpio_.startFlow();
+        }
+
+        if (hasAnyOutput && streamOk) {
+            sendEvent("done", "");
+        } else {
+            sendEvent("error", reply.empty() ? "AI error" : reply);
+            sendEvent("done", "");
+        }
+        httpd_resp_send_chunk(req, nullptr, 0);
+        return streamOk ? ESP_OK : ESP_FAIL;
     }});
 
     webServer_.start(routes);
