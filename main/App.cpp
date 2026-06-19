@@ -195,7 +195,7 @@ void App::startAPWebServer() {
             httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "No query");
             return ESP_FAIL;
         }
-
+        //修复了wifi特殊字符无法保存
         std::string ssid, pwd;
         getFormField(query, "ssid", ssid);
         getFormField(query, "pwd", pwd);
