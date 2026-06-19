@@ -1,0 +1,13 @@
+components/
+managed_components/
+build/
+.idea/
+sdkconfig.old
+sdkconfig
+dependencies.lock
+.env
+.cache
+*.pyc
+*.bin
+mmap_generate_*.h
+.clangd
