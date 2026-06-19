@@ -1,6 +1,6 @@
 # Esp32-AiControlHardware 🤖
 
-> ESP32 硬件控制项目，集成 AI 语音交互，通过智能指令控制各类外设
+> ESP32 硬件控制项目，集成 AI 语言交互，通过智能指令控制各类外设
 
 (中文 | [English](README_EN.md))
 ---
