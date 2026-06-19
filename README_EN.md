@@ -3,7 +3,6 @@
 > ESP32 hardware control project, integrating AI voice interaction to control various peripherals through intelligent commands
 
 (English | [中文](README.md))
-
 ---
 
 ## 📖 Project Introduction
