@@ -9,5 +9,4 @@ dependencies.lock
 .cache
 *.pyc
 *.bin
-mmap_generate_*.h
 .clangd
