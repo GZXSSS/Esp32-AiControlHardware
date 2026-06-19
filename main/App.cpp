@@ -195,14 +195,15 @@ void App::startAPWebServer() {
             httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "No query");
             return ESP_FAIL;
         }
-        char ssid[64] = {0}, pwd[64] = {0};
-        httpd_query_key_value(query, "ssid", ssid, sizeof(ssid));
-        httpd_query_key_value(query, "pwd", pwd, sizeof(pwd));
-        if (strlen(ssid)==0 || strlen(pwd)==0) {
+
+        std::string ssid, pwd;
+        getFormField(query, "ssid", ssid);
+        getFormField(query, "pwd", pwd);
+        if (ssid.empty() || pwd.empty()) {
             httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty");
             return ESP_FAIL;
         }
-        nvs_.setWiFiCred(ssid, pwd);
+        nvs_.setWiFiCred(ssid.c_str(), pwd.c_str());
         httpd_resp_send(req, "Saved, rebooting...", HTTPD_RESP_USE_STRLEN);
         vTaskDelay(pdMS_TO_TICKS(500));
         esp_restart();
