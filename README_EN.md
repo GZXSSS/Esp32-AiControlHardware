@@ -7,7 +7,7 @@
 
 ## 📖 Project Introduction
 
-**Esp32-AiControlHardware** is an intelligent hardware control platform based on ESP32. By integrating a large language model API (OpenAI-like), it enables natural language-driven device control. Users can operate hardware via voice, text, or serial commands; the system automatically parses the instructions and executes the corresponding GPIO operations, making smart home control more natural and convenient.
+**Esp32-AiControlHardware** is an intelligent hardware control platform based on ESP32. By integrating a large language model API (OpenAI-like), it enables natural language-driven device control. Users can operate hardware via language, text, or serial commands; the system automatically parses the instructions and executes the corresponding GPIO operations, making smart home control more natural and convenient.
 
 ---
 
